@@ -27,11 +27,23 @@ import { auth, db } from '../firebase';
 import { updatePassword } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, doc, updateDoc, addDoc, getDoc, setDoc, where, getDocs, deleteDoc } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
-import { format } from 'date-fns';
+import { format, startOfMonth as dStartOfMonth, endOfMonth as dEndOfMonth, eachMonthOfInterval, subMonths } from 'date-fns';
 import { QRCodeSVG, QRCodeCanvas } from 'qrcode.react';
 import jsPDF from 'jspdf';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer, 
+  Cell,
+  AreaChart,
+  Area
+} from 'recharts';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -43,6 +55,7 @@ const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }: { activeTab: st
   
   const menuItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+    { id: 'transactions', icon: Filter, label: 'Transações' },
     { id: 'pix', icon: Plus, label: 'Gerar Pix' },
     { id: 'settings', icon: SettingsIcon, label: 'Configurações', adminOnly: true },
     { id: 'logs', icon: Clock, label: 'Logs', adminOnly: true },
@@ -275,12 +288,14 @@ export default function AppContent() {
             <div className="flex flex-col">
               <h2 className="text-xl md:text-2xl font-bold text-slate-800 capitalize">
                 {activeTab === 'dashboard' ? 'Dashboard Financeiro' : 
+                 activeTab === 'transactions' ? 'Minhas Transações' :
                  activeTab === 'pix' ? 'Gerador Pix' : 
                  activeTab === 'settings' ? 'Configurações' : 
                  activeTab === 'logs' ? 'Logs do Sistema' : activeTab}
               </h2>
               <p className="text-slate-500 text-xs md:text-sm">
                 {activeTab === 'dashboard' ? 'Bem-vindo ao controle de transações Pix' : 
+                 activeTab === 'transactions' ? 'Acompanhe e gerencie todos os recebimentos' :
                  activeTab === 'pix' ? 'Gere cobranças Pix rápidas e acompanhe em tempo real' : 
                  activeTab === 'settings' ? 'Gerencie dados da empresa, usuários e permissões de acesso' : 
                  'Histórico completo de ações realizadas no sistema'}
@@ -318,7 +333,7 @@ export default function AppContent() {
           </div>
         </header>
 
-        {activeTab === 'dashboard' && (
+        {(activeTab === 'dashboard' || activeTab === 'transactions') && (
           <div className="mb-8 flex flex-col lg:flex-row gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -375,7 +390,15 @@ export default function AppContent() {
             transition={{ duration: 0.2 }}
             className="flex-1 flex flex-col"
           >
-            {activeTab === 'dashboard' && <Dashboard transactions={filteredTransactions} addLog={addLog} />}
+            {activeTab === 'dashboard' && <Dashboard transactions={filteredTransactions} allTransactions={transactions} />}
+            {activeTab === 'transactions' && (
+              <TransactionsView 
+                transactions={filteredTransactions} 
+                onSync={handleSync} 
+                onSelectTransaction={setSelectedTransaction}
+                onLog={addLog}
+              />
+            )}
             {activeTab === 'pix' && <PixGenerator settings={settings} identifiers={identifiers} />}
             {activeTab === 'settings' && <Settings settings={settings} identifiers={identifiers} />}
             {activeTab === 'logs' && <Logs />}
@@ -387,15 +410,90 @@ export default function AppContent() {
 }
 
 // Dashboard Components
-const Dashboard = ({ transactions, addLog }: { transactions: any[], addLog: (a: string, d: string) => Promise<void> }) => {
-  const [selectedTransaction, setSelectedTransaction] = useState<any>(null);
+const Dashboard = ({ transactions, allTransactions }: { transactions: any[], allTransactions: any[] }) => {
+  const { role, allowedIdentifiers } = useAuth();
+
+  // User Scope Transactions (Ignoring UI Filters like search/status/date-picker)
+  const userScopeTransactions = allTransactions.filter(t => {
+    if (role !== 'admin' && allowedIdentifiers && allowedIdentifiers.length > 0) {
+      return allowedIdentifiers.includes(t.identifier || '');
+    }
+    return true;
+  });
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  // Stats Calculations
+  // Today's stats based on userScope (unfiltered by UI)
+  const todayTransactions = userScopeTransactions.filter(t => {
+    if (!t.date || t.status !== 'confirmed') return false;
+    const d = new Date(t.date);
+    return d >= startOfToday;
+  });
+
+  // Current Month stats based on userScope (unfiltered by UI)
+  const monthTransactions = userScopeTransactions.filter(t => {
+    if (!t.date || t.status !== 'confirmed') return false;
+    const d = new Date(t.date);
+    return d >= startOfMonth;
+  });
+
+  // Filtered stats (Respecting date range/search filters)
+  const filteredTotalAmount = transactions.filter(t => t.status === 'confirmed').reduce((sum, t) => sum + (t.amount || 0), 0);
+  const filteredConfirmedCount = transactions.filter(t => t.status === 'confirmed').length;
+
+  const todayTotalAmount = todayTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+  const monthlyTotalAmount = monthTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+  const todayConfirmedCount = todayTransactions.length;
+  const monthlyConfirmedCount = monthTransactions.length;
+
+  const formatCurrency = (val: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
 
   const stats = [
-    { label: 'Total Hoje', value: 'R$ 0,00', icon: BarChart3, color: 'text-slate-800', bg: 'bg-white', meta: '+12% vs ontem', metaColor: 'text-emerald-600' },
-    { label: 'Confirmados', value: transactions.filter(t => t.status === 'confirmed').length, icon: CheckCircle2, color: 'text-slate-800', bg: 'bg-white', meta: 'Sucessos', metaColor: 'text-slate-500' },
-    { label: 'Pendentes', value: transactions.filter(t => t.status === 'pending').length, icon: Clock, color: 'text-slate-800', bg: 'bg-white', meta: 'Aguardando', metaColor: 'text-amber-600' },
-    { label: 'Status API', value: 'Operacional', icon: Check, color: 'text-emerald-600', bg: 'bg-white', meta: 'Online', metaColor: 'text-emerald-600', isPulse: true },
+    { label: 'Total Hoje', value: formatCurrency(todayTotalAmount), icon: BarChart3, color: 'text-slate-800', bg: 'bg-white', meta: 'Valor Acumulado', metaColor: 'text-emerald-600' },
+    { label: 'CONFIRMADOS NO DIA', value: todayConfirmedCount, icon: CheckCircle2, color: 'text-slate-800', bg: 'bg-white', meta: 'Transações Hoje', metaColor: 'text-emerald-500' },
+    { label: 'CONFIRMADOS NO MÊS', value: monthlyConfirmedCount, icon: CheckCircle2, color: 'text-slate-800', bg: 'bg-white', meta: 'Transações Mês', metaColor: 'text-blue-500' },
+    { label: 'TOTAL NO MÊS', value: formatCurrency(monthlyTotalAmount), icon: BarChart3, color: 'text-emerald-600', bg: 'bg-white', meta: 'Mês Atual', metaColor: 'text-emerald-600', isPulse: true },
   ];
+
+  // Chart Data: Hourly progression for the CURRENT FILTERED SET
+  // If only a specific interval is selected, we show that.
+  // For simplicity, if many days are selected, we group by date instead.
+  
+  const hourlyData = Array.from({ length: 24 }, (_, i) => {
+    const hour = i;
+    const total = transactions.filter(t => {
+      if (!t.date || t.status !== 'confirmed') return false;
+      const d = new Date(t.date);
+      return d.getHours() === hour;
+    }).reduce((sum, t) => sum + (t.amount || 0), 0);
+    return { hour: `${hour}h`, total };
+  });
+
+  // Chart Data: Monthly comparison for the userScopeTransactions
+  const monthsInterval = eachMonthOfInterval({
+    start: subMonths(now, 5),
+    end: now
+  });
+
+  const monthlyChartData = monthsInterval.map(m => {
+    const start = dStartOfMonth(m);
+    const end = dEndOfMonth(m);
+    const total = transactions.filter(t => {
+      if (!t.date || t.status !== 'confirmed') return false;
+      const d = new Date(t.date);
+      return d >= start && d <= end;
+    }).reduce((sum, t) => sum + (t.amount || 0), 0);
+    return {
+      name: format(m, 'MMM', { locale: undefined }), 
+      total,
+      month: format(m, 'MMMM')
+    };
+  });
+
+  const barColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
   return (
     <div className="space-y-6 flex-1 flex flex-col">
@@ -420,110 +518,235 @@ const Dashboard = ({ transactions, addLog }: { transactions: any[], addLog: (a: 
         ))}
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col flex-1">
-        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-          <h3 className="font-bold text-slate-800">Últimas Transações</h3>
-        </div>
-        <div className="overflow-x-auto flex-1">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-50/50 text-slate-400 text-[10px] font-bold uppercase tracking-widest">
-              <tr className="border-b border-slate-100">
-                <th className="px-4 md:px-6 py-3">Data/Hora</th>
-                <th className="px-4 md:px-6 py-3 min-w-[150px]">Pagador</th>
-                <th className="hidden md:table-cell px-6 py-3">CPF/CNPJ</th>
-                <th className="hidden sm:table-cell px-6 py-3">Identificador</th>
-                <th className="px-4 md:px-6 py-3 text-right">Valor</th>
-                <th className="px-4 md:px-6 py-3 text-center">Status</th>
-                <th className="px-4 md:px-6 py-3 text-right">Ações</th>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"
+        >
+          <div className="mb-6 flex justify-between items-center">
+            <div>
+              <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Total Hoje</h4>
+            </div>
+            <div className="bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">
+              <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">FILTRADO</span>
+            </div>
+          </div>
+          <div className="h-[250px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={hourlyData}>
+                <defs>
+                  <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis 
+                  dataKey="hour" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#94a3b8' }} 
+                  interval={3}
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#94a3b8' }}
+                  tickFormatter={(val) => `R$ ${val}`}
+                />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', padding: '8px' }}
+                  labelStyle={{ fontSize: '10px', fontWeight: 'bold', color: '#64748b', marginBottom: '4px' }}
+                  formatter={(value: number) => [formatCurrency(value), 'Total']}
+                />
+                <Area type="monotone" dataKey="total" stroke="#10b981" fillOpacity={1} fill="url(#colorTotal)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total no Período</span>
+            <span className="text-lg font-bold text-slate-800">{formatCurrency(filteredTotalAmount)}</span>
+          </div>
+        </motion.div>
+
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.1 }}
+          className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"
+        >
+          <div className="mb-6 flex justify-between items-center">
+            <div>
+              <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Comparativo Mensal</h4>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Últimos 6 Meses</p>
+            </div>
+            <div className="bg-slate-50 px-3 py-1 rounded-full border border-slate-100">
+              <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">{format(now, 'yyyy')}</span>
+            </div>
+          </div>
+          <div className="h-[250px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={monthlyChartData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis 
+                  dataKey="name" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 'bold' }} 
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: '#94a3b8' }}
+                  tickFormatter={(val) => `R$ ${val}`}
+                />
+                <Tooltip 
+                  cursor={{ fill: '#f8fafc' }}
+                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', padding: '8px' }}
+                  labelStyle={{ fontSize: '10px', fontWeight: 'bold', color: '#64748b', marginBottom: '4px' }}
+                  formatter={(value: number) => [formatCurrency(value), 'Valor']}
+                />
+                <Bar dataKey="total" radius={[4, 4, 0, 0]} barSize={32}>
+                  {monthlyChartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={barColors[index % barColors.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
+const TransactionsView = ({ transactions, onSync, onSelectTransaction, onLog }: { 
+  transactions: any[], 
+  onSync: () => Promise<void>, 
+  onSelectTransaction: (t: any) => void,
+  onLog: (a: string, d: string) => Promise<void>
+}) => {
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await onSync();
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col flex-1">
+      <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+        <h3 className="font-bold text-slate-800">Histórico de Transações</h3>
+        <button 
+          onClick={handleSync}
+          disabled={syncing}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-sm disabled:opacity-50",
+            syncing && "animate-pulse"
+          )}
+        >
+          <Clock className={cn("w-3.5 h-3.5", syncing && "animate-spin")} />
+          {syncing ? 'Sincronizando...' : 'Atualizar Operações'}
+        </button>
+      </div>
+      <div className="overflow-x-auto flex-1">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50/50 text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+            <tr className="border-b border-slate-100">
+              <th className="px-4 md:px-6 py-3">Data/Hora</th>
+              <th className="px-4 md:px-6 py-3 min-w-[150px]">Pagador</th>
+              <th className="hidden md:table-cell px-6 py-3">CPF/CNPJ</th>
+              <th className="hidden sm:table-cell px-6 py-3">Identificador</th>
+              <th className="px-4 md:px-6 py-3 text-right">Valor</th>
+              <th className="px-4 md:px-6 py-3 text-center">Status</th>
+              <th className="px-4 md:px-6 py-3 text-right">Ações</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50 text-sm text-slate-600">
+            {transactions.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 md:px-6 py-12 text-center text-slate-400 italic">
+                  Nenhuma transação encontrada.
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50 text-sm text-slate-600">
-              {transactions.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 md:px-6 py-12 text-center text-slate-400 italic">
-                    Nenhuma transação encontrada.
+            ) : (
+              transactions.map((t) => (
+                <tr key={t.id} className="hover:bg-slate-50/50 transition-colors group">
+                  <td className="px-4 md:px-6 py-3 font-medium whitespace-nowrap text-[10px] md:text-sm">
+                    {t.date ? format(new Date(t.date), 'dd MMM, HH:mm') : '-'}
+                  </td>
+                  <td className="px-4 md:px-6 py-3">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-slate-800 break-words line-clamp-1">{t.payerName}</span>
+                      <span className="md:hidden text-[9px] text-slate-400 font-mono tracking-tighter">{t.document}</span>
+                    </div>
+                  </td>
+                  <td className="hidden md:table-cell px-6 py-3">
+                    <span className="text-[10px] text-slate-500 font-mono tracking-tighter bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                      {t.document || '-'}
+                    </span>
+                  </td>
+                  <td className="hidden sm:table-cell px-6 py-3">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tight bg-slate-100 px-2 py-0.5 rounded">
+                      {t.identifier || '-'}
+                    </span>
+                  </td>
+                  <td className="px-4 md:px-6 py-3 text-right">
+                    <span className="font-bold text-slate-900 text-xs md:text-sm">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.amount)}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3 text-center">
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase transition-all",
+                      t.status === 'confirmed' 
+                        ? "bg-emerald-100 text-emerald-700" 
+                        : "bg-amber-100 text-amber-700"
+                    )}>
+                      {t.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button 
+                        onClick={() => onSelectTransaction(t)}
+                        className="text-emerald-600 font-bold hover:underline text-[10px] uppercase tracking-wider"
+                      >
+                        Ver Recibo
+                      </button>
+                      {t.status === 'pending' && (
+                        <button 
+                          onClick={async () => {
+                            if (confirm('Confirmar recebimento?')) {
+                              await updateDoc(doc(db, 'transactions', t.id), { 
+                                status: 'confirmed',
+                                updatedAt: new Date().toISOString()
+                              });
+                              await onLog('Confirmação Manual', `Recebimento confirmado para transação ${t.transactionId} de ${t.payerName}.`);
+                            }
+                          }}
+                          className="text-slate-400 font-bold hover:text-emerald-600 text-[10px] uppercase tracking-wider transition-colors"
+                        >
+                          Confirmar
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
-              ) : (
-                transactions.map((t) => (
-                  <tr key={t.id} className="hover:bg-slate-50/50 transition-colors group">
-                    <td className="px-4 md:px-6 py-3 font-medium whitespace-nowrap text-[10px] md:text-sm">
-                      {t.date ? format(new Date(t.date), 'dd MMM, HH:mm') : '-'}
-                    </td>
-                    <td className="px-4 md:px-6 py-3">
-                      <div className="flex flex-col">
-                        <span className="font-bold text-slate-800 break-words line-clamp-1">{t.payerName}</span>
-                        <span className="md:hidden text-[9px] text-slate-400 font-mono tracking-tighter">{t.document}</span>
-                      </div>
-                    </td>
-                    <td className="hidden md:table-cell px-6 py-3">
-                      <span className="text-[10px] text-slate-500 font-mono tracking-tighter bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                        {t.document || '-'}
-                      </span>
-                    </td>
-                    <td className="hidden sm:table-cell px-6 py-3">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-tight bg-slate-100 px-2 py-0.5 rounded">
-                        {t.identifier || '-'}
-                      </span>
-                    </td>
-                    <td className="px-4 md:px-6 py-3 text-right">
-                      <span className="font-bold text-slate-900 text-xs md:text-sm">
-                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(t.amount)}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3 text-center">
-                      <span className={cn(
-                        "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase transition-all",
-                        t.status === 'confirmed' 
-                          ? "bg-emerald-100 text-emerald-700" 
-                          : "bg-amber-100 text-amber-700"
-                      )}>
-                        {t.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        <button 
-                          onClick={() => setSelectedTransaction(t)}
-                          className="text-emerald-600 font-bold hover:underline text-[10px] uppercase tracking-wider"
-                        >
-                          Ver Recibo
-                        </button>
-                        {t.status === 'pending' && (
-                          <button 
-                            onClick={async () => {
-                              if (confirm('Confirmar recebimento?')) {
-                                await updateDoc(doc(db, 'transactions', t.id), { 
-                                  status: 'confirmed',
-                                  updatedAt: new Date().toISOString()
-                                });
-                                await addLog('Confirmação Manual', `Recebimento confirmado para transação ${t.transactionId} de ${t.payerName}.`);
-                              }
-                            }}
-                            className="text-slate-400 font-bold hover:text-emerald-600 text-[10px] uppercase tracking-wider transition-colors"
-                          >
-                            Confirmar
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center">
-          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Mostrando {transactions.length} de {transactions.length} transações</p>
-        </div>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
-
-      {selectedTransaction && (
-        <TransactionModal 
-          transaction={selectedTransaction} 
-          onClose={() => setSelectedTransaction(null)} 
-        />
-      )}
+      <div className="px-6 py-3 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+        <span>Total: {transactions.length} registros</span>
+        <span>Soma: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(transactions.reduce((acc, t) => acc + (t.amount || 0), 0))}</span>
+      </div>
     </div>
   );
 };
