@@ -6,6 +6,28 @@ import fs from "fs";
 import axios from "axios";
 import { fileURLToPath } from "url";
 import admin from "firebase-admin";
+import * as mysql from 'mysql2/promise';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import 'dotenv/config';
+
+// Database selection and configuration
+const DB_TYPE = process.env.DB_TYPE || 'firebase';
+let pool: mysql.Pool | null = null;
+
+if (DB_TYPE === 'mysql') {
+  pool = mysql.createPool({
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME || 'pix_manager',
+    port: parseInt(process.env.DB_PORT || '3306'),
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+  });
+  console.log('MySQL Connection Pool Created');
+}
 
 // Initialize Firebase Admin (using internal project ID)
 try {
@@ -32,6 +54,101 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // --- VPS Handlers (MySQL) ---
+  
+  // Custom Login for VPS
+  app.post("/api/auth/login", async (req, res) => {
+    const { email, password } = req.body;
+    if (DB_TYPE !== 'mysql' || !pool) return res.status(404).json({ error: "MySQL mode not enabled" });
+
+    try {
+      const [users]: any = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+      if (users.length === 0) return res.status(401).json({ error: "Credenciais inválidas" });
+
+      const user = users[0];
+      // Note: In production, use bcrypt.compareSync(password, user.password_hash)
+      
+      const token = jwt.sign(
+        { uid: user.uid, email: user.email, role: user.role },
+        process.env.JWT_SECRET || 'secret',
+        { expiresIn: '24h' }
+      );
+
+      res.json({ success: true, token, user: { uid: user.uid, email: user.email, role: user.role, displayName: user.displayName } });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Settings Management (MySQL)
+  app.get("/api/db/settings", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const [rows]: any = await pool.query('SELECT * FROM settings WHERE id = 1');
+      return res.json(rows[0] || {});
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  app.post("/api/db/settings", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const s = req.body;
+      const sql = `INSERT INTO settings (id, company_name, cnpj, pix_key, sicoob_client_id, sicoob_client_secret, sicoob_cert, sicoob_key) 
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?) 
+                   ON DUPLICATE KEY UPDATE company_name=?, cnpj=?, pix_key=?, sicoob_client_id=?, sicoob_client_secret=?, sicoob_cert=?, sicoob_key=?`;
+      const vals = [s.companyName, s.cnpj, s.pixKey, s.sicoobClientId, s.sicoobClientSecret, s.sicoobCert, s.sicoobKey];
+      await pool.query(sql, [...vals, ...vals]);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  // Identifiers Management (MySQL)
+  app.get("/api/db/identifiers", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const [rows] = await pool.query('SELECT * FROM identifiers');
+      return res.json(rows);
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  app.post("/api/db/identifiers", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      await pool.query('INSERT INTO identifiers (name) VALUES (?)', [req.body.name]);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  // Transactions Management (MySQL)
+  app.get("/api/db/transactions", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const [rows] = await pool.query('SELECT * FROM transactions ORDER BY created_at DESC');
+      return res.json(rows);
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  app.post("/api/db/transactions", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const t = req.body;
+      await pool.query(`INSERT INTO transactions (transaction_id, payer_name, document, amount, identifier, status, pix_data, qr_code) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
+                        [t.transactionId, t.payerName, t.document, t.amount, t.identifier, t.status, t.pixData, t.qrCode]);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
+
+  // Logs Management (MySQL)
+  app.post("/api/db/logs", async (req, res) => {
+    if (DB_TYPE === 'mysql' && pool) {
+      const l = req.body;
+      await pool.query('INSERT INTO logs (action, details, user_email) VALUES (?, ?, ?)', [l.action, l.details, l.userEmail]);
+      return res.json({ success: true });
+    }
+    res.status(404).json({ error: "Not in MySQL mode" });
+  });
 
   // API Routes
   

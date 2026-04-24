@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_TYPE=mysql
+      - DB_HOST=db
+      - DB_USER=pix_user
+      - DB_PASS=pix_pass
+      - DB_NAME=pix_manager
+      - DB_PORT=3306
+      - JWT_SECRET=mude_este_segredo_para_producao
+    depends_on:
+      - db
+    restart: always
+
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      - MYSQL_DATABASE=pix_manager
+      - MYSQL_USER=pix_user
+      - MYSQL_PASSWORD=pix_pass
+      - MYSQL_ROOT_PASSWORD=root_pass
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/setup.sql:ro
+    ports:
+      - "3306:3306"
+
+volumes:
+  mysql_data:
