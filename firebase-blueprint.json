@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "viewer"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Global application and Sicoob API settings",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "pixKey": { "type": "string" },
+        "sicoobClientId": { "type": "string" },
+        "sicoobClientSecret": { "type": "string" },
+        "sicoobCert": { "type": "string" },
+        "sicoobKey": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Pix transaction record",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date-time" },
+        "amount": { "type": "number" },
+        "identifier": { "type": "string" },
+        "document": { "type": "string" },
+        "payerName": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "note": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "confirmed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "amount", "payerName", "transactionId", "status"]
+    },
+    "Log": {
+      "title": "Log",
+      "description": "Audit log for tracking actions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "settings/config": {
+      "schema": "Setting",
+      "description": "Global settings for the application"
+    },
+    "transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Pix transactions synced from Sicoob or created manually"
+    },
+    "logs/{logId}": {
+      "schema": "Log",
+      "description": "Audit log entry"
+    }
+  }
+}

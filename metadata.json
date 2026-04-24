@@ -1,0 +1,6 @@
+{
+  "name": "PixCRM Financeiro",
+  "description": "CRM financeiro moderno para gestão e confirmação de transações Pix via API Sicoob, com geração de QR Code e recibos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

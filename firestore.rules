@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Transactions
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin();
+      allow update: if (
+        isSignedIn() && (
+          // Admin can update anything, including notes and status
+          isAdmin() ||
+          // Viewers (or others) might be able to update ONLY the note if allowed, 
+          // let's stick to admin-only for status changes for now as per "Produção" requirements.
+          (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['note']))
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Users
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isOwner(userId);
+    }
+
+    // Settings
+    match /settings/config {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Logs
+    match /logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+    }
+
+    // Identifiers
+    match /identifiers/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
